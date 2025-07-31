@@ -29,12 +29,12 @@
 # Import utime or time for fix time handling
 try:
     # Assume running on MicroPython
-    import utime
+    import utime, uasyncio
     get_ticks = utime.ticks_ms # get_ticks() (in milli second) used in fix_time.
 except ImportError:
     # Otherwise default to time module for non-embedded implementations
     # Should still support millisecond resolution.
-    import time
+    import time, asyncio
     get_ticks = time.time
 
 
@@ -92,6 +92,8 @@ class MicropyGPS(object):
         # Logging Related
         self.log_handle = None
         self.log_en = False
+        self.log_filename = ''
+        self.log_fimemode = ''
 
         #####################
         # Data From Sentences
@@ -159,35 +161,38 @@ class MicropyGPS(object):
     # Logging Related Functions
     ########################################
     def start_logging(self, target_file, mode="append"):
-        """Create GPS data log object"""
+        """Enable GPS data logging Function"""
         # Set write mode: Overwrite or Append
         mode_code = 'w' if mode == 'new' else 'a'
 
         try:
-            self.log_handle = open(target_file, mode_code)
+            with open(target_file, mode) as f: #check File edit
+                pass
         except AttributeError:
             print("Invalid FileName")
             return False
 
+        self.log_filename = target_file
+        self.log_fimemode = mode
         self.log_en = True
         return True
 
     def stop_logging(self):
-        """Closes the log file handler and disables further logging"""
-        try:
-            self.log_handle.close()
-        except AttributeError:
-            print("Invalid Handle")
-            return False
-
+        """Disable Logging"""
         self.log_en = False
         return True
 
-    def write_log(self, log_string):
+    async def write_log(self, log_string):
         """Attempts to write the last valid NMEA sentence character to the active file handler"""
+        if self.log_en == False:
+            return False
         try:
-            self.log_handle.write(log_string)
-        except TypeError:
+            with open(self.log_filename, self.log_fimemode) as f:
+                swriter = asyncio.StreamWriter(f,{})
+                swriter.write(log_string)
+                await swriter.drain()
+        except Exception as e:
+            print(e)
             return False
         return True
 
@@ -603,7 +608,7 @@ class MicropyGPS(object):
         self.gps_segments.append(self.__buf.decode('ascii'))
         self.__buf[:] = b''
 
-    def update(self, new_char):
+    async def update(self, new_char):
         """
         Process a new input char and updates GPS object if necessary based on special characters ('$', ',', '*')
         Function builds a list of received string that are validated by CRC prior to parsing by the appropriate
@@ -614,10 +619,6 @@ class MicropyGPS(object):
         ascii_char = ord(new_char)
         if 32 <= ascii_char <= 126 or ascii_char in (10, 13):
             self.char_count += 1
-
-            # Write character to log file if enabled
-            if self.log_en:
-                self.write_log(new_char)
 
             # Check if a new sentence is starting ($)
             if ascii_char == 36: # '$' 36 = 0x24
@@ -658,6 +659,11 @@ class MicropyGPS(object):
                         # CRC Value was deformed and could not have been correct
                         return None
                     self.clean_sentences += 1  # Increment clean sentences received
+                    
+                    # Write character to log file if enabled
+                    if self.log_en:
+                        write_str = bytearray('$'+','.join(self.gps_segments[0:-1])+'*'+self.gps_segments[-1]+'/r/n', 'UTF-8')
+                        await self.write_log(write_str)
 
                     # If the valid sentence is a supported sentence type, then parse it!!
                     if (self.gps_segments[0] in self.supported_sentences
