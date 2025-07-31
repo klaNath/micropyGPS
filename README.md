@@ -1,5 +1,12 @@
 # micropyGPS
 
+Modified by klaNath (https://github.com/klaNath/micropyGPS), 2025. for Micropython 1.26
+
+Based on ekspla folk, Change Logging Function and Updata() function. both use asyncio.
+
+----
+
+
 Modfied by ekspla (https://github.com/ekspla/micropyGPS), 2023.  Tested on CPython 3 and Micropython 1.19.1.
 
 1. Fixed wrong formatted decimal degrees in latitudes and logitudes. DD format should have sign (+/-) 
