@@ -662,8 +662,12 @@ class MicropyGPS(object):
                     
                     # Write character to log file if enabled
                     if self.log_en:
-                        write_str = bytearray('$'+','.join(self.gps_segments[0:-1])+'*'+self.gps_segments[-1]+'/r/n', 'UTF-8')
-                        await self.write_log(write_str)
+                        if self.gps_segments[0] in self.logging_sentences:
+                            try:
+                                write_str = bytearray('$'+','.join(self.gps_segments[0:-1])+'*'+self.gps_segments[-1]+'/r/n', 'UTF-8')
+                                await self.write_log(write_str)
+                            except Exception as e:
+                                print(e)
 
                     # If the valid sentence is a supported sentence type, then parse it!!
                     if (self.gps_segments[0] in self.supported_sentences
@@ -850,6 +854,8 @@ class MicropyGPS(object):
                            'GNVTG': gpvtg, 'GNGLL': gpgll,
                            'GNGSA': gpgsa, 'GPZDA': gpzda,
                           }
+    
+    logging_sentences = ['GPRMC', 'GPGGA', 'GPVTG', 'GNGSA']
 
 if __name__ == "__main__":
     pass
