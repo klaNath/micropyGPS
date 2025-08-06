@@ -688,6 +688,8 @@ class MicropyGPS(object):
                 # When CRC input is disabled sentence is nearly complete, additional 2 bytes necessary for CRC.
                 elif len(self.__buf) == 2:
                     self.sentence_active = False  # Clear active processing flag
+                    if self.log_en and self.log_buf_valid:
+                        self.log_buf.extend(self.__buf)
                     self.__update_segment() # Update CRC segment
 
                     try: # Check CRC errors
@@ -703,8 +705,10 @@ class MicropyGPS(object):
                     if self.log_en and self.log_buf_valid:
                         if self.gps_segments[0] in self.logging_sentences:
                             try:
-                                write_str = bytearray('$'+','.join(self.gps_segments[0:-1])+'*'+self.gps_segments[-1], 'UTF-8')
+                                #write_str = bytearray(f'${self.__comma.join(self.gps_segments[0:-1])}*{self.gps_segments[-1]}', 'UTF-8')
+                                #self.write_log(write_str)
                                 self.write_log(self.log_buf)
+                                self.log_buf[:] = b''
                             except Exception as e:
                                 print('Outer write log: ',end='')
                                 print(e)
