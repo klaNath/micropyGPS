@@ -2,7 +2,7 @@
 
 Modified by klaNath (https://github.com/klaNath/micropyGPS), 2025. for Micropython 1.26
 
-Based on ekspla folk, Change Logging Function and Updata() function. both use asyncio.
+Based on ekspla folk, Change Logging Function.
 
 ----
 
