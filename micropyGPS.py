@@ -29,13 +29,15 @@
 # Import utime or time for fix time handling
 try:
     # Assume running on MicroPython
-    import utime, uasyncio
+    import utime
     get_ticks = utime.ticks_ms # get_ticks() (in milli second) used in fix_time.
 except ImportError:
     # Otherwise default to time module for non-embedded implementations
     # Should still support millisecond resolution.
-    import time, asyncio
+    import time
     get_ticks = time.time
+
+import asyncio
 
 
 class MicropyGPS(object):
@@ -48,15 +50,17 @@ class MicropyGPS(object):
     SENTENCE_LIMIT = 90
     #__HEMISPHERES = 'NSEW'
     __NO_FIX, __FIX_2D, __FIX_3D = 1, 2, 3
-    __DIRECTIONS = ('N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 
-                    'S', 'SSW', 'SW', 'WSW', 'W','WNW', 'NW', 'NNW')
-    __MONTHS = ('January', 'February', 'March', 'April', 'May', 'June', 
-                'July', 'August', 'September', 'October', 'November', 'December')
+    __DIRECTIONS = const(('N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 
+                    'S', 'SSW', 'SW', 'WSW', 'W','WNW', 'NW', 'NNW'))
+    __MONTHS = const(('January', 'February', 'March', 'April', 'May', 'June', 
+                'July', 'August', 'September', 'October', 'November', 'December'))
     CLEAR_DATE = (0, 0, 0)
     CLEAR_TIME = (0, 0, 0.0)
     CLEAR_LAT = (0, 0.0, 'N')
     CLEAR_LON = (0, 0.0, 'W')
     __f_nan = float('nan')
+
+    _CRLF = b'\r\n'
 
     def __init__(self, local_offset=0, location_formatting='ddm', century=None):
         """
@@ -90,10 +94,12 @@ class MicropyGPS(object):
 
         #####################
         # Logging Related
-        self.log_handle = None
+        self.log_buf = bytearray() # Buffer for logging
         self.log_en = False
         self.log_filename = ''
         self.log_fimemode = ''
+        self.log_charnum = 0
+        self.log_buf_valid = False
 
         #####################
         # Data From Sentences
@@ -161,38 +167,57 @@ class MicropyGPS(object):
     # Logging Related Functions
     ########################################
     def start_logging(self, target_file, mode="append"):
+        import collections
         """Enable GPS data logging Function"""
         # Set write mode: Overwrite or Append
-        mode_code = 'w' if mode == 'new' else 'a'
+        mode_code = 'wb' if mode == 'new' else 'ab'
 
         try:
-            with open(target_file, mode) as f: #check File edit
+            with open(target_file, mode_code) as f:
                 pass
         except AttributeError:
             print("Invalid FileName")
             return False
-
+                
         self.log_filename = target_file
-        self.log_fimemode = mode
+        self.log_fimemode = mode_code
+        self.log_charnum = 0
         self.log_en = True
+        self.log_buf_valid = False
+        self.log_buf[:] = b''
         return True
 
     def stop_logging(self):
         """Disable Logging"""
+        # try:
+        #     self.log_handle.close()
+        # except AttributeError:
+        #     print("Invalid Handle")
+        #     return False
+        self.log_fimemode = ''
+        self.log_filename = ''
         self.log_en = False
+        self.log_buf_valid = False
+        self.log_buf[:] = b''
         return True
 
-    async def write_log(self, log_string):
-        """Attempts to write the last valid NMEA sentence character to the active file handler"""
+    def write_log(self, log_string:bytearray):
+        """Attempts to write the valid NMEA sentence character to the active file handler"""
         if self.log_en == False:
             return False
+        elif self.log_buf_valid == False:
+            return False
         try:
-            with open(self.log_filename, self.log_fimemode) as f:
-                swriter = asyncio.StreamWriter(f,{})
-                swriter.write(log_string)
-                await swriter.drain()
-        except Exception as e:
-            print(e)
+            self.log_buf_valid = False
+            with open(self.log_filename, 'a') as f:
+                s = f.write(log_string)
+                f.write(self._CRLF)
+            self.log_charnum += (s + 2)
+        except TypeError:
+            print("Inner write_log, Type Error")
+            return False
+        except AttributeError:
+            print("Inner write_log, Invalid Handle")
             return False
         return True
 
@@ -458,6 +483,10 @@ class MicropyGPS(object):
             fix_type = int(self.gps_segments[2])
         except ValueError:
             return False
+        
+        # Length Check
+        if len(self.gps_segments) != 19:
+            return False
 
         # Read All (up to 12) Available PRN Satellite Numbers
         sats_used = []
@@ -479,6 +508,8 @@ class MicropyGPS(object):
             vdop = float(self.gps_segments[17])
         except ValueError:
             return False
+        except Exception as e:
+            print(e)
 
         # If fix is GOOD, update fix timestamp
         if fix_type > self.__NO_FIX:
@@ -603,12 +634,15 @@ class MicropyGPS(object):
         self.process_crc = True
         self.char_count = 0
         self.__buf[:] = b''
+        if self.log_en:
+            self.log_buf_valid = True
+            self.log_buf[:] = b'$'
 
     def __update_segment(self):
         self.gps_segments.append(self.__buf.decode('ascii'))
         self.__buf[:] = b''
 
-    async def update(self, new_char):
+    def update(self, new_char):
         """
         Process a new input char and updates GPS object if necessary based on special characters ('$', ',', '*')
         Function builds a list of received string that are validated by CRC prior to parsing by the appropriate
@@ -628,11 +662,16 @@ class MicropyGPS(object):
 
                 # Check if the active segment is ended (,), create a new segment to feed characters to
                 if ascii_char == 44: # ',' 44 = 0x2c
+                    if self.log_en and self.log_buf_valid:
+                        self.log_buf.extend(self.__buf + b',')
                     self.__update_segment()
                     self.active_segment += 1
+                    
 
                 # Check if the sentence is almost ending (*), CRC (2 bytes) follows
                 elif ascii_char == 42: # '*' 42 = 0x2a
+                    if self.log_en and self.log_buf_valid:
+                        self.log_buf.extend(self.__buf + b'*')
                     self.process_crc = False
                     self.__update_segment()
                     self.active_segment += 1
@@ -661,9 +700,14 @@ class MicropyGPS(object):
                     self.clean_sentences += 1  # Increment clean sentences received
                     
                     # Write character to log file if enabled
-                    if self.log_en:
-                        write_str = bytearray('$'+','.join(self.gps_segments[0:-1])+'*'+self.gps_segments[-1]+'/r/n', 'UTF-8')
-                        await self.write_log(write_str)
+                    if self.log_en and self.log_buf_valid:
+                        if self.gps_segments[0] in self.logging_sentences:
+                            try:
+                                write_str = bytearray('$'+','.join(self.gps_segments[0:-1])+'*'+self.gps_segments[-1], 'UTF-8')
+                                self.write_log(self.log_buf)
+                            except Exception as e:
+                                print('Outer write log: ',end='')
+                                print(e)
 
                     # If the valid sentence is a supported sentence type, then parse it!!
                     if (self.gps_segments[0] in self.supported_sentences
@@ -850,6 +894,8 @@ class MicropyGPS(object):
                            'GNVTG': gpvtg, 'GNGLL': gpgll,
                            'GNGSA': gpgsa, 'GPZDA': gpzda,
                           }
+    
+    logging_sentences = ['GPRMC', 'GPGGA', 'GPVTG', 'GNGSA']
 
 if __name__ == "__main__":
     pass
