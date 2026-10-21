@@ -61,6 +61,7 @@ class MicropyGPS(object):
     __f_nan = float('nan')
 
     _CRLF = b'\r\n'
+    LOG_WBUF_SIZE = 2048 # Write to the file every this size of bytes
 
     def __init__(self, local_offset=0, location_formatting='ddm', century=None):
         """
@@ -95,6 +96,8 @@ class MicropyGPS(object):
         #####################
         # Logging Related
         self.log_buf = bytearray() # Buffer for logging
+        self.log_wbuf = bytearray() # Buffer for file writing
+        self.log_handle = None
         self.log_en = False
         self.log_filename = ''
         self.log_fimemode = ''
@@ -173,46 +176,65 @@ class MicropyGPS(object):
         mode_code = 'wb' if mode == 'new' else 'ab'
 
         try:
-            with open(target_file, mode_code) as f:
-                pass
-        except AttributeError:
+            # Keep the file open while logging. Opening/closing it for every sentence is too slow on SD card.
+            self.log_handle = open(target_file, mode_code)
+        except (AttributeError, OSError):
             print("Invalid FileName")
+            self.log_handle = None
             return False
-                
+
         self.log_filename = target_file
         self.log_fimemode = mode_code
         self.log_charnum = 0
         self.log_en = True
         self.log_buf_valid = False
         self.log_buf[:] = b''
+        self.log_wbuf[:] = b''
         return True
 
     def stop_logging(self):
         """Disable Logging"""
-        # try:
-        #     self.log_handle.close()
-        # except AttributeError:
-        #     print("Invalid Handle")
-        #     return False
+        try:
+            self.flush_log()
+            self.log_handle.close()
+        except AttributeError:
+            print("Invalid Handle")
+        except OSError as e:
+            # e.g. the card has already been removed
+            print("stop_logging: ", e)
+        self.log_handle = None
         self.log_fimemode = ''
         self.log_filename = ''
         self.log_en = False
         self.log_buf_valid = False
         self.log_buf[:] = b''
+        self.log_wbuf[:] = b''
+        return True
+
+    def flush_log(self):
+        """Writes the buffered sentences and syncs the file (updates file size on the card)"""
+        if self.log_handle is None:
+            return False
+        if len(self.log_wbuf) != 0:
+            self.log_handle.write(self.log_wbuf)
+            self.log_wbuf[:] = b''
+        self.log_handle.flush()
         return True
 
     def write_log(self, log_string:bytearray):
-        """Attempts to write the valid NMEA sentence character to the active file handler"""
+        """Stores the valid NMEA sentence to the write buffer, and writes it to the file when the buffer is full"""
         if self.log_en == False:
             return False
         elif self.log_buf_valid == False:
             return False
         try:
             self.log_buf_valid = False
-            with open(self.log_filename, 'a') as f:
-                s = f.write(log_string)
-                f.write(self._CRLF)
-            self.log_charnum += (s + 2)
+            self.log_wbuf.extend(log_string)
+            self.log_wbuf.extend(self._CRLF)
+            self.log_charnum += (len(log_string) + 2)
+            if len(self.log_wbuf) >= self.LOG_WBUF_SIZE:
+                self.log_handle.write(self.log_wbuf)
+                self.log_wbuf[:] = b''
         except TypeError:
             print("Inner write_log, Type Error")
             return False
