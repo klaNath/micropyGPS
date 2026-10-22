@@ -38,6 +38,25 @@ except ImportError:
     get_ticks = time.time
 
 import asyncio
+import sys
+
+# NMEA checksum (XOR of the bytes between '$' and '*'), used in update_line()
+if sys.implementation.name == 'micropython':
+    import micropython
+    @micropython.viper
+    def _nmea_crc(buf) -> int:
+        p = ptr8(buf)
+        n = int(len(buf))
+        crc = 0
+        for i in range(n):
+            crc ^= p[i]
+        return crc
+else:
+    def _nmea_crc(buf):
+        crc = 0
+        for c in buf:
+            crc ^= c
+        return crc
 
 
 class MicropyGPS(object):
@@ -82,6 +101,7 @@ class MicropyGPS(object):
         self.process_crc = False
         self.gps_segments = []
         self.__buf = bytearray() # Buffer for update()
+        self.__line_rest = b'' # Incomplete line for update_bytes()
         self.__buf_append = self.__buf.append
         self.crc_xor = 0
         self.char_count = 0
@@ -663,6 +683,75 @@ class MicropyGPS(object):
     def __update_segment(self):
         self.gps_segments.append(self.__buf.decode('ascii'))
         self.__buf[:] = b''
+
+    def update_bytes(self, data):
+        """
+        Process received bytes (any length, e.g. from UART.read()) line by line with update_line().
+        Much faster than calling update() for each character. The incomplete last line is kept for the next call.
+        Do not mix with update() for the same stream.
+        """
+        if self.__line_rest:
+            data = self.__line_rest + data
+        lines = data.split(b'\n')
+        rest = lines.pop()
+        # Discard garbage which never ends with LF
+        self.__line_rest = rest if len(rest) <= self.SENTENCE_LIMIT else b''
+        for line in lines:
+            self.update_line(line)
+
+    def update_line(self, line):
+        """
+        Process one NMEA sentence (bytes, e.g. b'$GPRMC,...*hh\\r'). Leading garbage and CR/LF are ignored.
+        Same result as update() for each character of the sentence, except that unprintable chars are not skipped.
+        Returns sentence type (e.g. 'GPRMC') on successful parse, None otherwise
+        """
+        start = line.find(b'$')
+        if start < 0:
+            return None
+        star = line.find(b'*', start)
+        if star < 0 or len(line) < star + 3 or star + 3 - start > self.SENTENCE_LIMIT:
+            return None
+
+        body = line[start + 1:star]
+        try:
+            segments = body.decode('ascii').split(',')
+            crc_str = line[star + 1:star + 3].decode('ascii')
+        except UnicodeError:
+            return None
+
+        # Unsupported sentences are not processed (same as update())
+        sentence_type = segments[0]
+        if sentence_type not in self.supported_sentences:
+            return None
+
+        try: # Check CRC errors
+            if _nmea_crc(body) != int(crc_str, 16):
+                self.crc_fails += 1
+                return None
+        except ValueError:
+            # CRC Value was deformed and could not have been correct
+            return None
+        self.clean_sentences += 1
+
+        segments.append(crc_str)
+        self.gps_segments = segments
+        self.active_segment = len(segments) - 1
+        self.sentence_active = False
+
+        # Write sentence to log file if enabled
+        if self.log_en and sentence_type in self.logging_sentences:
+            try:
+                self.log_buf_valid = True
+                self.write_log(line[start:star + 3])
+            except Exception as e:
+                print('Outer write log: ',end='')
+                print(e)
+
+        # Parse the sentence based on the message type, receive True if parse is clean
+        if self.supported_sentences[sentence_type](self):
+            self.parsed_sentences += 1
+            return sentence_type
+        return None
 
     def update(self, new_char):
         """
