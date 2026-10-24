@@ -494,3 +494,39 @@ def test_coordinate_representations():
     assert my_gps.latitude_string() == """53° 21' 41" N"""
     assert my_gps.longitude_string() == """6° 30' 20" W"""
     print('Degrees Minutes Seconds Longitude:', my_gps.longitude_string())
+
+
+# u-blox MAX-M10M (SPG 5.10, NMEA 4.11): GSV per talker and signal ID, GSA with system ID
+test_multi_GSV = ['$GPGSV,3,1,11,05,41,131,08,12,08,167,15,13,10,171,20,14,13,049,09,1*67\n',
+                  '$GPGSV,3,2,11,15,66,010,31,18,43,259,33,20,43,058,23,21,09,130,13,1*61\n',
+                  '$GPGSV,3,3,11,22,21,067,12,23,34,317,08,24,70,224,07,1*5C\n',
+                  '$GPGSV,1,1,03,10,03,314,,42,21,244,,50,21,244,,0*51\n',
+                  '$GLGSV,2,1,05,65,49,041,31,66,40,323,21,81,30,284,37,82,13,329,17,1*74\n',
+                  '$GLGSV,2,2,05,88,20,225,32,1*4B\n',
+                  '$GLGSV,1,1,01,77,02,183,,0*40\n',
+                  '$GAGSV,3,1,09,02,16,138,10,03,49,045,16,05,04,069,09,08,59,299,22,7*7F\n',
+                  '$GAGSV,3,2,09,13,48,290,11,15,47,202,32,25,20,083,11,32,68,001,21,7*7B\n',
+                  '$GAGSV,3,3,09,34,07,167,19,7*42\n',
+                  '$GAGSV,1,1,03,07,15,263,,16,05,040,,26,08,326,,0*4E\n',
+                  '$GQGSV,1,1,03,02,08,172,,04,85,297,,08,24,244,,0*50\n']
+test_multi_GSA = ['$GNGSA,A,3,20,18,05,21,24,15,13,14,12,23,,,1.30,0.68,1.10,1*07\n',
+                  '$GNGSA,A,3,66,88,81,,,,,,,,,,1.30,0.68,1.10,2*07\n',
+                  '$GNGSA,A,3,08,15,13,03,25,32,02,,,,,,1.30,0.68,1.10,3*06\n',
+                  '$GNGSA,A,3,,,,,,,,,,,,,1.30,0.68,1.10,5*09\n']
+
+def test_multi_gnss():
+    my_gps = MicropyGPS()
+    parsed = [my_gps.update(y) for s in test_multi_GSV + test_multi_GSA for y in s]
+    assert len([p for p in parsed if p]) == len(test_multi_GSV) + len(test_multi_GSA)
+    # satellites_in_view is the total of all talkers and signals
+    assert my_gps.satellites_in_view == 35
+    by_system = my_gps.satellite_data_by_system
+    assert {k: len(v) for k, v in by_system.items()} == {'GP': 14, 'GL': 6, 'GA': 12, 'GQ': 3}
+    assert by_system['GA'][34] == (7, 167, 19)
+    # satellite_data keeps the last group as before
+    assert set(my_gps.satellite_data) == {2, 4, 8}
+    # satellites_used is the union of the systems
+    assert {k: len(v) for k, v in my_gps.satellites_used_by_system.items()} == {'GP': 10, 'GL': 3, 'GA': 7, 'GQ': 0}
+    assert len(my_gps.satellites_used) == 20
+    assert my_gps.fix_type == 3
+    assert my_gps.pdop == 1.30 and my_gps.hdop == 0.68 and my_gps.vdop == 1.10
