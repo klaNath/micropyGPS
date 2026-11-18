@@ -27,6 +27,8 @@
 #    satellite_data is unchanged (the last GSV group).
 # 3. GSA with the system ID (NMEA 4.10+) is parsed.  satellites_used is the union of the systems and
 #    satellites_used_by_system ({talker: [PRN, ...]}) is added.
+# 4. update_line() (one sentence) and update_bytes() (any chunk of the stream) parse a whole sentence at
+#    once, much faster than update() for each character (cherry-picked from branch test_flush).
 """
 
 # TODO:

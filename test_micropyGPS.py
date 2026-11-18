@@ -530,3 +530,54 @@ def test_multi_gnss():
     assert len(my_gps.satellites_used) == 20
     assert my_gps.fix_type == 3
     assert my_gps.pdop == 1.30 and my_gps.hdop == 0.68 and my_gps.vdop == 1.10
+
+
+# Parsed results compared between update() (each character) and update_line() / update_bytes()
+_parsed_attrs = ('timestamp', 'date', 'century', 'latitude', 'longitude', 'coord_format', 'speed',
+                 'course', 'altitude', 'geoid_height', 'satellites_in_view', 'satellites_in_use',
+                 'satellites_used', 'last_sv_sentence', 'total_sv_sentences', 'satellite_data',
+                 'satellite_data_by_system', 'satellites_used_by_system', 'hdop', 'pdop', 'vdop',
+                 'valid', 'fix_stat', 'fix_type', 'crc_fails', 'clean_sentences', 'parsed_sentences')
+
+
+def _all_test_sentences():
+    return (test_RMC + test_VTG + test_GGA + test_GSA + test_GSV + test_GLL + test_ZDA
+            + test_multi_GSV + test_multi_GSA)
+
+
+def _same_state(a, b):
+    for k in _parsed_attrs:
+        va, vb = getattr(a, k), getattr(b, k)
+        assert repr(va) == repr(vb), (k, va, vb)  # repr: nan == nan
+
+
+def test_update_line():
+    a = MicropyGPS()
+    b = MicropyGPS()
+    for s in _all_test_sentences():
+        ra = None
+        for c in s:
+            ra = a.update(c) or ra
+        rb = b.update_line(s.encode())
+        assert ra == rb, (s, ra, rb)
+        _same_state(a, b)
+    # CR LF, leading garbage, a wrong checksum and an unsupported sentence
+    assert b.update_line(b'xx$GPVTG,232.9,T,,M,002.3,N,004.3,K,A*01\r\n') == 'GPVTG'
+    fails = b.crc_fails
+    assert b.update_line(b'$GPVTG,232.9,T,,M,002.3,N,004.3,K,A*02\r\n') is None
+    assert b.crc_fails == fails + 1
+    assert b.update_line(b'$GPXXX,1,2*00\r\n') is None
+    assert b.update_line(b'$GPVTG,232.9,T,,M,002.3,N,004.3,K,A*0') is None  # truncated checksum
+    assert b.update_line(b'no sentence') is None
+
+
+def test_update_bytes():
+    a = MicropyGPS()
+    b = MicropyGPS()
+    stream = ''.join(s if s.endswith('\n') else s + '\r\n' for s in _all_test_sentences())
+    for c in stream:
+        a.update(c)
+    data = stream.encode()
+    for i in range(0, len(data), 37):  # chunks that split sentences
+        b.update_bytes(data[i:i + 37])
+    _same_state(a, b)
